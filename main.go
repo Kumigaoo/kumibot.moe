@@ -45,6 +45,13 @@ var (
 )
 
 func main() {
+//=============================================================
+// MINECRA
+//=============================================================
+go startMinecraftAPI()
+go monitorBackend()
+go monitorMinecraft()
+
 	token := os.Getenv("DISCORD_TOKEN")
 
 	if token == "" {
@@ -54,7 +61,9 @@ func main() {
 	if err := loadConfig(); err != nil {
 		log.Printf("No se pudo cargar config.json: %v", err)
 	}
-
+	state.Lock()
+	state.ChannelID = config.ChannelID
+	state.Unlock()
 	var err error
 
 	discord, err = discordgo.New("Bot " + token)
@@ -81,7 +90,9 @@ func main() {
 	log.Println("Kumigaoo Bot iniciado.")
 
 	select {}
+
 }
+
 
 // ============================================================
 // CONFIG
@@ -152,7 +163,23 @@ func registerCommands() error {
 
 	return nil
 }
+func startMinecraftAPI() {
+	mux := http.NewServeMux()
 
+	mux.HandleFunc("/minecraft/event", minecraftHandler)
+
+	server := &http.Server{
+		Addr:    ":8080",
+		Handler: mux,
+	}
+
+	log.Println("Minecraft API escuchando en :8080")
+
+	if err := server.ListenAndServe(); err != nil &&
+		err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
+}
 func onInteraction(
 	s *discordgo.Session,
 	i *discordgo.InteractionCreate,
