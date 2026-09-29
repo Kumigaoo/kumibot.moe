@@ -7,7 +7,20 @@
 *.dll
 *.so
 *.dylib
+.env
+*.env
+config.json
 
+# Compiled binaries
+kumigaoo-bot
+bin/
+
+# Go
+*.test
+
+# IDE
+.vscode/
+.idea/
 # Test binary, built with `go test -c`
 *.test
 
