@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"os"
 	"time"
 )
+const minecraftAddress = "nuestro.kumigaoo.moe:25565"
 
 
 type MinecraftEvent struct {
@@ -17,7 +19,6 @@ type MinecraftEvent struct {
 	PlayerCount int      `json:"player_count"`
 	MaxPlayers  int      `json:"max_players"`
 }
-
 func minecraftHandler(w http.ResponseWriter, r *http.Request) {
 	minecraftToken := os.Getenv("MINECRAFT_TOKEN")
 	
@@ -51,9 +52,6 @@ func minecraftHandler(w http.ResponseWriter, r *http.Request) {
 func handleMinecraftEvent(event MinecraftEvent) {
 	switch event.Event {
 
-	case "heartbeat":
-		handleMinecraftHeartbeat(event)
-
 	case "player_join":
 		handleMinecraftJoin(event)
 
@@ -70,30 +68,43 @@ func handleMinecraftEvent(event MinecraftEvent) {
 var (
 	lastMinecraftHeartbeat time.Time
 )
-func handleMinecraftHeartbeat(event MinecraftEvent) {
-	state.Lock()
+func checkMinecraft() bool {
+    conn, err := net.DialTimeout("tcp", minecraftAddress, 5*time.Second)
+    if err != nil {
+        return false
+    }
 
-	previous := state.MinecraftOnline
+    conn.Close()
+    return true
+}
+func updateMinecraftStatus() {
+    online := checkMinecraft()
 
-	state.MinecraftOnline = true
-	state.MaxPlayers = event.MaxPlayers
+    state.Lock()
+    previous := state.MinecraftOnline
+    state.MinecraftOnline = online
 
-	state.Players = make(map[string]bool)
+    if !online {
+        state.Players = make(map[string]bool)
+    }
 
-	for _, player := range event.Players {
-		state.Players[player] = true
-	}
+    state.Unlock()
 
-	state.Unlock()
+    // Offline -> Online
+    if online && !previous {
+        sendNotification(
+            "🟢 **Minecraft online**\n" +
+                "El servidor de Minecraft está disponible.",
+        )
+    }
 
-	lastMinecraftHeartbeat = time.Now()
-
-	if !previous {
-		sendNotification(
-			"🟢 **Minecraft online**\n" +
-				"El servidor de Minecraft vuelve a estar online.",
-		)
-	}
+    // Online -> Offline
+    if !online && previous {
+        sendNotification(
+            "🔴 **Minecraft offline**\n" +
+                "El servidor de Minecraft ha dejado de responder.",
+        )
+    }
 }
 func monitorMinecraft() {
 	ticker := time.NewTicker(30 * time.Second)

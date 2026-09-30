@@ -52,6 +52,10 @@ go startMinecraftAPI()
 go monitorBackend()
 go monitorMinecraft()
 
+http.HandleFunc("/minecraft/event", minecraftHandler)
+
+log.Println("Bot iniciado")
+
 	token := os.Getenv("DISCORD_TOKEN")
 
 	if token == "" {
