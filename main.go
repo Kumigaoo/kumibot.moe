@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	backendURL      = "https://api.kumigaoo.moe/"
+	backendURL      = "https://api.kumigaoo.moe/swagger"
 	backendInterval = 30 * time.Second
 	configFile      = "config.json"
 )
@@ -43,21 +43,8 @@ var (
 
 	discord *discordgo.Session
 )
-
 func main() {
-//=============================================================
-// MINECRA
-//=============================================================
-go startMinecraftAPI()
-go monitorBackend()
-go monitorMinecraft()
-
-http.HandleFunc("/minecraft/event", minecraftHandler)
-
-log.Println("Bot iniciado")
-
 	token := os.Getenv("DISCORD_TOKEN")
-
 	if token == "" {
 		log.Fatal("DISCORD_TOKEN no está configurado")
 	}
@@ -65,9 +52,11 @@ log.Println("Bot iniciado")
 	if err := loadConfig(); err != nil {
 		log.Printf("No se pudo cargar config.json: %v", err)
 	}
+
 	state.Lock()
 	state.ChannelID = config.ChannelID
 	state.Unlock()
+
 	var err error
 
 	discord, err = discordgo.New("Bot " + token)
@@ -76,7 +65,6 @@ log.Println("Bot iniciado")
 	}
 
 	discord.AddHandler(onInteraction)
-
 	discord.Identify.Intents = discordgo.IntentsGuilds
 
 	if err := discord.Open(); err != nil {
@@ -89,14 +77,15 @@ log.Println("Bot iniciado")
 		log.Fatal(err)
 	}
 
-	go monitorBackend()
+	// Todo lo que usa Discord arranca DESPUÉS de conectar
+	go startMinecraftAPI() // recibe join/quit/death/chat del plugin
+	go monitorBackend()    // GET api.kumigaoo.moe
+	go monitorMinecraft()  // TCP nuestro.kumigaoo.moe:25565
 
 	log.Println("Kumigaoo Bot iniciado.")
 
 	select {}
-
 }
-
 
 // ============================================================
 // CONFIG

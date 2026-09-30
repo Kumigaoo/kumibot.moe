@@ -7,8 +7,12 @@ import (
 	"os"
 	"time"
 )
-const minecraftAddress = "nuestro.kumigaoo.moe:25565"
 
+const (
+	minecraftAddress  = "nuestro.kumigaoo.moe:25565"
+	minecraftInterval = 30 * time.Second
+	minecraftFailures = 1 // comprobaciones fallidas seguidas antes de marcar offline
+)
 
 type MinecraftEvent struct {
 	Event       string   `json:"event"`
@@ -19,114 +23,95 @@ type MinecraftEvent struct {
 	PlayerCount int      `json:"player_count"`
 	MaxPlayers  int      `json:"max_players"`
 }
+
 func minecraftHandler(w http.ResponseWriter, r *http.Request) {
-	minecraftToken := os.Getenv("MINECRAFT_TOKEN")
-	
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	auth := r.Header.Get("Authorization")
-	expected := "Bearer " + minecraftToken
-
-	if auth != expected {
+	expected := "Bearer " + os.Getenv("MINECRAFT_TOKEN")
+	if r.Header.Get("Authorization") != expected {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	var event MinecraftEvent
-
-	decoder := json.NewDecoder(r.Body)
-
-	if err := decoder.Decode(&event); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
 
 	handleMinecraftEvent(event)
-
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func handleMinecraftEvent(event MinecraftEvent) {
 	switch event.Event {
-
 	case "player_join":
 		handleMinecraftJoin(event)
-
 	case "player_quit":
 		handleMinecraftQuit(event)
-
 	case "player_death":
 		handleMinecraftDeath(event)
-
 	case "chat":
 		handleMinecraftChat(event)
 	}
 }
-var (
-	lastMinecraftHeartbeat time.Time
-)
+
+// ============================================================
+// MONITOR TCP
+// ============================================================
+
 func checkMinecraft() bool {
-    conn, err := net.DialTimeout("tcp", minecraftAddress, 5*time.Second)
-    if err != nil {
-        return false
-    }
-
-    conn.Close()
-    return true
+	conn, err := net.DialTimeout("tcp", minecraftAddress, 5*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
-func updateMinecraftStatus() {
-    online := checkMinecraft()
 
-    state.Lock()
-    previous := state.MinecraftOnline
-    state.MinecraftOnline = online
-
-    if !online {
-        state.Players = make(map[string]bool)
-    }
-
-    state.Unlock()
-
-    // Offline -> Online
-    if online && !previous {
-        sendNotification(
-            "🟢 **Minecraft online**\n" +
-                "El servidor de Minecraft está disponible.",
-        )
-    }
-
-    // Online -> Offline
-    if !online && previous {
-        sendNotification(
-            "🔴 **Minecraft offline**\n" +
-                "El servidor de Minecraft ha dejado de responder.",
-        )
-    }
-}
 func monitorMinecraft() {
-	ticker := time.NewTicker(30 * time.Second)
+	// Primera comprobación: fija el estado sin notificar
+	initial := checkMinecraft()
+	state.Lock()
+	state.MinecraftOnline = initial
+	state.Unlock()
+
+	failures := 0
+
+	ticker := time.NewTicker(minecraftInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		state.RLock()
-		online := state.MinecraftOnline
-		state.RUnlock()
+		online := checkMinecraft()
 
-		if !online {
-			continue
+		if online {
+			failures = 0
+		} else {
+			failures++
+			if failures < minecraftFailures {
+				continue // aún no lo damos por caído
+			}
 		}
 
-		if time.Since(lastMinecraftHeartbeat) > 90*time.Second {
-			state.Lock()
-
-			state.MinecraftOnline = false
+		state.Lock()
+		previous := state.MinecraftOnline
+		state.MinecraftOnline = online
+		if !online {
 			state.Players = make(map[string]bool)
+		}
+		state.Unlock()
 
-			state.Unlock()
+		if online && !previous {
+			sendNotification(
+				"🟢 **Minecraft online**\n" +
+					"El servidor de Minecraft está disponible.",
+			)
+		}
 
+		if !online && previous {
 			sendNotification(
 				"🔴 **Minecraft offline**\n" +
 					"El servidor de Minecraft ha dejado de responder.",
@@ -134,12 +119,17 @@ func monitorMinecraft() {
 		}
 	}
 }
+
+// ============================================================
+// EVENTOS DEL PLUGIN
+// ============================================================
+
 func handleMinecraftJoin(event MinecraftEvent) {
 	state.Lock()
-
-	state.MinecraftOnline = true
 	state.Players[event.Player] = true
-
+	if event.MaxPlayers > 0 {
+		state.MaxPlayers = event.MaxPlayers
+	}
 	state.Unlock()
 
 	sendNotification(
@@ -147,11 +137,13 @@ func handleMinecraftJoin(event MinecraftEvent) {
 			"`" + event.Player + "` ha entrado al servidor.",
 	)
 }
+
 func handleMinecraftQuit(event MinecraftEvent) {
 	state.Lock()
-
 	delete(state.Players, event.Player)
-
+	if event.MaxPlayers > 0 {
+		state.MaxPlayers = event.MaxPlayers
+	}
 	state.Unlock()
 
 	sendNotification(
@@ -159,9 +151,9 @@ func handleMinecraftQuit(event MinecraftEvent) {
 			"`" + event.Player + "` ha salido del servidor.",
 	)
 }
+
 func handleMinecraftDeath(event MinecraftEvent) {
 	message := event.Message
-
 	if message == "" {
 		message = event.Player + " ha muerto."
 	}
@@ -171,6 +163,7 @@ func handleMinecraftDeath(event MinecraftEvent) {
 			"`" + message + "`",
 	)
 }
+
 func handleMinecraftChat(event MinecraftEvent) {
 	sendNotification(
 		"💬 **Minecraft**\n" +
