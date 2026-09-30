@@ -2,8 +2,8 @@ package main
 
 import (
 	"encoding/json"
-	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 )
@@ -63,18 +63,36 @@ func handleMinecraftEvent(event MinecraftEvent) {
 // MONITOR TCP
 // ============================================================
 
-func checkMinecraft() bool {
-	conn, err := net.DialTimeout("tcp", minecraftAddress, 5*time.Second)
+func checkMinecraftPublic() bool {
+	client := &http.Client{Timeout: 15 * time.Second}
+
+	req, err := http.NewRequest(
+		http.MethodGet,
+		"https://api.mcsrvstat.us/3/"+url.PathEscape(minecraftAddress),
+		nil,
+	)
 	if err != nil {
 		return false
 	}
-	conn.Close()
-	return true
-}
+	req.Header.Set("User-Agent", "kumigaoo-bot (status monitor)")
 
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Online bool `json:"online"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false
+	}
+	return result.Online
+}
 func monitorMinecraft() {
 	// Primera comprobación: fija el estado sin notificar
-	initial := checkMinecraft()
+	initial := checkMinecraftPublic()
 	state.Lock()
 	state.MinecraftOnline = initial
 	state.Unlock()
@@ -85,7 +103,7 @@ func monitorMinecraft() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		online := checkMinecraft()
+		online := checkMinecraftPublic()
 
 		if online {
 			failures = 0
