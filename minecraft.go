@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -155,7 +157,38 @@ func handleMinecraftJoin(event MinecraftEvent) {
 			"`" + event.Player + "` ha entrado al servidor.",
 	)
 }
+var pluginClient = &http.Client{Timeout: 5 * time.Second}
 
+func sendToMinecraft(author, message string) {
+	url := os.Getenv("MINECRAFT_PLUGIN_URL")
+	if url == "" {
+		return
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"author":  author,
+		"message": message,
+	})
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		log.Println("Error creando request al plugin:", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("MINECRAFT_TOKEN"))
+
+	resp, err := pluginClient.Do(req)
+	if err != nil {
+		log.Println("No se pudo contactar con el plugin:", err)
+		return
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Println("El plugin respondió HTTP", resp.StatusCode)
+	}
+}
 func handleMinecraftQuit(event MinecraftEvent) {
 	state.Lock()
 	delete(state.Players, event.Player)

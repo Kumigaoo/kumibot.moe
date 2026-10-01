@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,8 +66,10 @@ func main() {
 	}
 
 	discord.AddHandler(onInteraction)
-	discord.Identify.Intents = discordgo.IntentsGuilds
-
+	discord.AddHandler(onMessageCreate)
+discord.Identify.Intents = discordgo.IntentsGuilds |
+	discordgo.IntentsGuildMessages |
+	discordgo.IntentMessageContent
 	if err := discord.Open(); err != nil {
 		log.Fatal(err)
 	}
@@ -356,7 +359,43 @@ func monitorBackend() {
 		check()
 	}
 }
+func onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
+	// Ignora bots (incluido el propio) para evitar bucles
+	if m.Author == nil || m.Author.Bot {
+		return
+	}
 
+	state.RLock()
+	channelID := state.ChannelID
+	state.RUnlock()
+
+	// Solo el canal configurado con /setchannel
+	if channelID == "" || m.ChannelID != channelID {
+		return
+	}
+
+	name := m.Author.Username
+	if m.Author.GlobalName != "" {
+		name = m.Author.GlobalName
+	}
+	if m.Member != nil && m.Member.Nick != "" {
+		name = m.Member.Nick
+	}
+
+	text := m.ContentWithMentionsReplaced()
+	text = strings.ReplaceAll(text, "\n", " ")
+	if text == "" && len(m.Attachments) > 0 {
+		text = "[archivo adjunto]"
+	}
+	if text == "" {
+		return
+	}
+	if r := []rune(text); len(r) > 256 {
+		text = string(r[:256]) + "…"
+	}
+
+	go sendToMinecraft(name, text)
+}
 func statusCode(resp *http.Response) int {
 	if resp == nil {
 		return 0
