@@ -500,6 +500,7 @@ func monitorBackend() {
 
 		if previous != online {
 			if online {
+				caido=0
 				sendNotification(
 					"🟢 **Backend online**\n" +
 						"`api.kumigaoo.moe` vuelve a responder correctamente.",
@@ -509,8 +510,7 @@ func monitorBackend() {
 					"🔴 **Backend offline**\n" +
 						"`api.kumigaoo.moe` ha dejado de responder correctamente.",
 				)
-			}
-			else {
+			} else {
 				caido++
 			}
 		}
