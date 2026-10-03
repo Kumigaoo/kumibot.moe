@@ -22,9 +22,8 @@ const (
 	// ESPN expone marcadores/calendarios sin API key para estas competiciones.
 	// Añade o elimina ligas según cuáles deban activar el aviso.
 	soccerCheckWindow = 30 * time.Minute
-	soccerLeagues     = []string{"eng.1", "esp.1", "ita.1", "ger.1", "fra.1", "uefa.champions"}
 )
-
+var soccerLeagues     = []string{"eng.1", "esp.1", "ita.1", "ger.1", "fra.1", "uefa.champions"}
 type Config struct {
 	ChannelID string `json:"channel_id"`
 }
