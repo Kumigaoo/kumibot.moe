@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -17,6 +18,11 @@ const (
 	backendURL      = "https://api.kumigaoo.moe/swagger"
 	backendInterval = 30 * time.Second
 	configFile      = "config.json"
+
+	// ESPN expone marcadores/calendarios sin API key para estas competiciones.
+	// Añade o elimina ligas según cuáles deban activar el aviso.
+	soccerCheckWindow = 30 * time.Minute
+	soccerLeagues     = []string{"eng.1", "esp.1", "ita.1", "ger.1", "fra.1", "uefa.champions"}
 )
 
 type Config struct {
@@ -30,7 +36,8 @@ type ServerState struct {
 
 	MinecraftOnline bool
 	BackendOnline   bool
-
+	BackendCaido int
+	MinecraftCaido int
 	Players    map[string]bool
 	MaxPlayers int
 }
@@ -136,6 +143,10 @@ func registerCommands() error {
 			Name:        "status",
 			Description: "Muestra el estado de Minecraft y del backend.",
 		},
+		{
+			Name:        "putotebas",
+			Description: "Comprueba si hay un partido en los próximos 30 minutos.",
+		},
 	}
 
 	for _, guild := range discord.State.Guilds {
@@ -190,6 +201,9 @@ func onInteraction(
 
 	case "status":
 		handleStatus(s, i)
+
+	case "putotebas":
+		handlePutotebas(s, i)
 	}
 }
 
@@ -269,25 +283,174 @@ func handleStatus(
 	respond(s, i, message)
 }
 
-func respond(
+// ============================================================
+// /putotebas
+// ============================================================
+
+type espnScoreboard struct {
+	Events []struct {
+		Name string `json:"name"`
+		Date string `json:"date"`
+		Competitions []struct {
+			Competitors []struct {
+				Team struct {
+					DisplayName string `json:"displayName"`
+				} `json:"team"`
+			} `json:"competitors"`
+		} `json:"competitions"`
+	} `json:"events"`
+}
+
+// handlePutotebas comprueba si empieza algún partido de las ligas
+// configuradas dentro de los próximos 30 minutos.
+
+func handlePutotebas(
 	s *discordgo.Session,
 	i *discordgo.InteractionCreate,
-	message string,
 ) {
-	err := s.InteractionRespond(
-		i.Interaction,
-		&discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: message,
-			},
-		},
-	)
+	respond(s, i, "⏳ Comprobando partidos en los próximos 30 minutos...")
 
-	if err != nil {
-		log.Println("Error respondiendo a Discord:", err)
-	}
+	go func() {
+		matches, err := findUpcomingMatches()
+		if err != nil {
+			log.Println("Error comprobando partidos:", err)
+			_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+				Content: "❌ No pude consultar el calendario de fútbol.",
+			})
+			return
+		}
+
+		if len(matches) == 0 {
+			_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+				Content: "🟢 No hay partidos de las ligas configuradas que empiecen en los próximos 30 minutos.",
+			})
+			return
+		}
+
+		message := "⚠️ **Partidos en los próximos 30 minutos**\n\n"
+		for _, match := range matches {
+			message += fmt.Sprintf("• **%s** — %s (%s)\n",
+				match.Name,
+				match.Start.Local().Format("15:04"),
+				match.Start.Local().Format("02/01/2006"),
+			)
+		}
+
+		if len([]rune(message)) > 2000 {
+			message = string([]rune(message)[:1990]) + "\n…"
+		}
+
+		_, err = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: message,
+		})
+		if err != nil {
+			log.Println("Error enviando resultado de /putotebas:", err)
+		}
+	}()
 }
+
+type upcomingMatch struct {
+	Name  string
+	Start time.Time
+}
+
+func findUpcomingMatches() ([]upcomingMatch, error) {
+    client := &http.Client{Timeout: 10 * time.Second}
+    now := time.Now()
+    until := now.Add(soccerCheckWindow)
+
+    var matches []upcomingMatch
+
+    for _, league := range soccerLeagues {
+        url := fmt.Sprintf(
+            "https://site.api.espn.com/apis/site/v2/sports/soccer/%s/scoreboard",
+            league,
+        )
+
+        req, err := http.NewRequest(http.MethodGet, url, nil)
+        if err != nil {
+            return nil, err
+        }
+
+        resp, err := client.Do(req)
+        if err != nil {
+            return nil, err
+        }
+
+        body, readErr := io.ReadAll(resp.Body)
+        resp.Body.Close()
+
+        if readErr != nil {
+            return nil, readErr
+        }
+        if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+            return nil, fmt.Errorf("ESPN devolvió HTTP %d para %s", resp.StatusCode, league)
+        }
+
+        var scoreboard espnScoreboard
+        if err := json.Unmarshal(body, &scoreboard); err != nil {
+            return nil, err
+        }
+
+        for _, event := range scoreboard.Events {
+            start, err := time.Parse(time.RFC3339, event.Date)
+            if err != nil {
+                continue
+            }
+
+            // Solo partidos que todavía no han empezado y cuyo inicio
+            // está entre ahora y +30 minutos.
+            if start.Before(now) || start.After(until) {
+                continue
+            }
+
+            name := event.Name
+            if name == "" && len(event.Competitions) > 0 {
+                var teams []string
+                for _, competitor := range event.Competitions[0].Competitors {
+                    if competitor.Team.DisplayName != "" {
+                        teams = append(teams, competitor.Team.DisplayName)
+                    }
+                }
+                if len(teams) == 2 {
+                    name = teams[0] + " vs " + teams[1]
+                }
+            }
+
+            if name == "" {
+                name = "Partido sin nombre"
+            }
+
+            matches = append(matches, upcomingMatch{
+                Name:  name,
+                Start: start,
+            })
+        }
+    }
+
+    return matches, nil
+}
+
+func respond(
+    s *discordgo.Session,
+    i *discordgo.InteractionCreate,
+    message string,
+) {
+    err := s.InteractionRespond(
+        i.Interaction,
+        &discordgo.InteractionResponse{
+            Type: discordgo.InteractionResponseChannelMessageWithSource,
+            Data: &discordgo.InteractionResponseData{
+                Content: message,
+            },
+        },
+    )
+
+    if err != nil {
+        log.Println("Error respondiendo a Discord:", err)
+    }
+}
+
 
 // ============================================================
 // BACKEND
@@ -326,7 +489,7 @@ func monitorBackend() {
 
 		previous := state.BackendOnline
 		state.BackendOnline = online
-
+		caido := state.BackendCaido
 		state.Unlock()
 
 		log.Printf(
@@ -341,11 +504,14 @@ func monitorBackend() {
 					"🟢 **Backend online**\n" +
 						"`api.kumigaoo.moe` vuelve a responder correctamente.",
 				)
-			} else {
+			} else if caido>=3 {
 				sendNotification(
 					"🔴 **Backend offline**\n" +
 						"`api.kumigaoo.moe` ha dejado de responder correctamente.",
 				)
+			}
+			else {
+				caido++
 			}
 		}
 	}
