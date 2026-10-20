@@ -453,80 +453,95 @@ func respond(
 // BACKEND
 // ============================================================
 
+
 func monitorBackend() {
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-	failures:=0
-	check := func() {
-		req, err := http.NewRequest(
-			http.MethodGet,
-			backendURL,
-			nil,
-		)
+    client := &http.Client{
+        Timeout: 10 * time.Second,
+    }
 
-		if err != nil {
-			log.Println("Error creando request:", err)
-			return
-		}
+    failures := 0
 
-		resp, err := client.Do(req)
+    check := func() {
+        req, err := http.NewRequest(
+            http.MethodGet,
+            backendURL,
+            nil,
+        )
+        if err != nil {
+            log.Println("Error creando request:", err)
+            return
+        }
 
-		online := false
+        resp, err := client.Do(req)
 
-		if err == nil {
-			resp.Body.Close()
-			if failures<=backendFailures{
-				online=state.BackendOnline
-				failures++
-			} else {
-			failures=0
-			online =
-				resp.StatusCode >= 200 &&
-					resp.StatusCode < 500
-			}
-		}
+        status := 0
+        online := false
 
-		state.Lock()
+        if err == nil {
+            status = resp.StatusCode
+            online = status >= 200 && status < 500
+            resp.Body.Close()
+        }
 
-		previous := state.BackendOnline
-		state.BackendOnline = online
-		caido := state.BackendCaido
-		state.Unlock()
+        if online {
+            failures = 0
+        } else {
+            failures++
 
-		log.Printf(
-			"Backend: %s (HTTP %d)",
-			statusText(online),
-			statusCode(resp),
-		)
+            log.Printf(
+                "Backend check failed (%d/%d): HTTP %d, error: %v",
+                failures,
+                backendFailures,
+                status,
+                err,
+            )
 
-		if previous != online {
-			if online {
-				caido=0
-				sendNotification(
-					"🟢 **Backend online**\n" +
-						"`api.kumigaoo.moe` vuelve a responder correctamente.",
-				)
-			} else if caido>=3 {
-				sendNotification(
-					"🔴 **Backend offline**\n" +
-						"`api.kumigaoo.moe` ha dejado de responder correctamente.",
-				)
-			} else {
-				caido++
-			}
-		}
-	}
+            // Do not mark the backend offline until
+            // we have enough consecutive failures.
+            if failures < backendFailures {
+                return
+            }
+        }
 
-	check()
+        state.Lock()
+        previous := state.BackendOnline
+        state.BackendOnline = online
+        state.Unlock()
 
-	ticker := time.NewTicker(backendInterval)
-	defer ticker.Stop()
+        log.Printf(
+            "Backend: %s (HTTP %d)",
+            statusText(online),
+            status,
+        )
 
-	for range ticker.C {
-		check()
-	}
+        // Notify only when the confirmed status changes.
+        if previous == online {
+            return
+        }
+
+        if online {
+            sendNotification(
+                "🟢 **Backend online**\n" +
+                    "`api.kumigaoo.moe` vuelve a responder correctamente.",
+            )
+        } else {
+            sendNotification(
+                "🔴 **Backend offline**\n" +
+                    "`api.kumigaoo.moe` ha dejado de responder correctamente.",
+            )
+        }
+    }
+
+    check()
+
+    ticker := time.NewTicker(backendInterval)
+    defer ticker.Stop()
+
+    for range ticker.C {
+        check()
+    }
 }
+
 func onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// Ignora bots (incluido el propio) para evitar bucles
 	if m.Author == nil || m.Author.Bot {
