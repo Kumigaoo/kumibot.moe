@@ -13,7 +13,7 @@ import (
 const (
 	minecraftAddress  = "nuestro.kumigaoo.moe:25565"
 	minecraftInterval = 30 * time.Second
-	minecraftFailures = 1 // comprobaciones fallidas seguidas antes de marcar offline
+	minecraftFailures = 3 // comprobaciones fallidas seguidas antes de marcar offline
 )
 
 type MinecraftEvent struct {

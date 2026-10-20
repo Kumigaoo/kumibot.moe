@@ -16,7 +16,8 @@ import (
 const (
 	backendURL      = "https://api.kumigaoo.moe/swagger"
 	backendInterval = 30 * time.Second
-	configFile      = "config.json"
+	configFile      = "config.json"	
+	backendFailures = 3
 )
 
 type Config struct {
@@ -297,7 +298,7 @@ func monitorBackend() {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
-
+	failures:=0
 	check := func() {
 		req, err := http.NewRequest(
 			http.MethodGet,
@@ -316,10 +317,15 @@ func monitorBackend() {
 
 		if err == nil {
 			resp.Body.Close()
-
+			if failures<=3{
+				online=state.BackendOnline
+				failures++
+			} else {
+			failures=0
 			online =
 				resp.StatusCode >= 200 &&
 					resp.StatusCode < 500
+			}
 		}
 
 		state.Lock()
