@@ -515,7 +515,7 @@ func monitorBackend() {
         )
 
         // Notify only when the confirmed status changes.
-        if previous == online {
+        if previous == online && failures<3 {
             return
         }
 
